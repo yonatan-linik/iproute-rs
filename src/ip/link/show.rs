@@ -3,13 +3,28 @@
 use std::collections::HashMap;
 
 use futures_util::stream::TryStreamExt;
-use rtnetlink::packet_route::link::{LinkAttribute, LinkMessage};
+use rtnetlink::packet_route::link::{
+    AfSpecInet6, AfSpecUnspec, LinkAttribute, LinkMessage,
+};
 use serde::Serialize;
 
 use super::flags::link_flags_to_string;
 use iproute_rs::{
     CanDisplay, CanOutput, CliColor, CliError, mac_to_string, write_with_color,
 };
+
+#[derive(Serialize, Default)]
+pub(crate) struct CliLinkInfoDetails {
+    promiscuity: u32,
+    min_mtu: u32,
+    max_mtu: u32,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    inet6_addr_gen_mode: String,
+    num_tx_queues: u32,
+    num_rx_queues: u32,
+    gso_max_size: u32,
+    gso_max_segs: u32,
+}
 
 #[derive(Serialize, Default)]
 pub(crate) struct CliLinkInfo {
@@ -32,6 +47,9 @@ pub(crate) struct CliLinkInfo {
     address: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     broadcast: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(flatten)]
+    details: Option<CliLinkInfoDetails>,
 }
 
 impl std::fmt::Display for CliLinkInfo {
@@ -67,6 +85,21 @@ impl std::fmt::Display for CliLinkInfo {
             write!(f, " brd ")?;
             write_with_color!(f, CliColor::Mac, "{}", self.broadcast)?;
         }
+
+        if let Some(details) = &self.details {
+            write!(
+                f,
+                " promiscuity {} minmtu {} maxmtu {} addrgenmode {} numtxqueues {} numrxqueues {} gso_max_size {} gso_max_segs {} ",
+                details.promiscuity,
+                details.min_mtu,
+                details.max_mtu,
+                details.inet6_addr_gen_mode,
+                details.num_tx_queues,
+                details.num_rx_queues,
+                details.gso_max_size,
+                details.gso_max_segs
+            )?;
+        }
         Ok(())
     }
 }
@@ -81,6 +114,7 @@ impl CanOutput for CliLinkInfo {}
 
 pub(crate) async fn handle_show(
     _opts: &[&str],
+    include_details: bool,
 ) -> Result<Vec<CliLinkInfo>, CliError> {
     let (connection, handle, _) = rtnetlink::new_connection()?;
 
@@ -98,7 +132,7 @@ pub(crate) async fn handle_show(
     let mut ifaces: Vec<CliLinkInfo> = Vec::new();
 
     while let Some(nl_msg) = links.try_next().await? {
-        ifaces.push(parse_nl_msg_to_iface(nl_msg)?);
+        ifaces.push(parse_nl_msg_to_iface(nl_msg, include_details)?);
     }
 
     resolve_controller_name(&mut ifaces);
@@ -108,6 +142,7 @@ pub(crate) async fn handle_show(
 
 pub(crate) fn parse_nl_msg_to_iface(
     nl_msg: LinkMessage,
+    include_details: bool,
 ) -> Result<CliLinkInfo, CliError> {
     let mut ret = CliLinkInfo {
         ifindex: nl_msg.header.index,
@@ -115,6 +150,8 @@ pub(crate) fn parse_nl_msg_to_iface(
         link_type: nl_msg.header.link_layer_type.to_string().to_lowercase(),
         ..Default::default()
     };
+
+    let mut details = CliLinkInfoDetails::default();
 
     for nl_attr in nl_msg.attributes {
         match nl_attr {
@@ -139,12 +176,48 @@ pub(crate) fn parse_nl_msg_to_iface(
             }
             LinkAttribute::Mode(v) => ret.linkmode = v.to_string(),
             LinkAttribute::Controller(d) => ret.controller_ifindex = Some(d),
+            LinkAttribute::Promiscuity(p) => details.promiscuity = p,
+            LinkAttribute::MinMtu(m) => details.min_mtu = m,
+            LinkAttribute::MaxMtu(m) => details.max_mtu = m,
+            LinkAttribute::NumTxQueues(n) => details.num_tx_queues = n,
+            LinkAttribute::NumRxQueues(n) => details.num_rx_queues = n,
+            LinkAttribute::GsoMaxSize(g) => details.gso_max_size = g,
+            LinkAttribute::GsoMaxSegs(g) => details.gso_max_segs = g,
+            LinkAttribute::AfSpecUnspec(a) => {
+                details.inet6_addr_gen_mode = get_addr_gen_mode(&a)
+            }
             _ => {
                 // println!("Remains {:?}", nl_attr);
             }
         }
     }
+
+    ret.details = include_details.then_some(details);
+
     Ok(ret)
+}
+
+fn get_addr_gen_mode(af_spec_unspec: &[AfSpecUnspec]) -> String {
+    af_spec_unspec
+        .iter()
+        .filter_map(|s| {
+            let AfSpecUnspec::Inet6(v) = s else {
+                return None;
+            };
+            v.iter()
+                .filter_map(|i| {
+                    if let AfSpecInet6::AddrGenMode(mode) = i {
+                        Some(mode)
+                    } else {
+                        None
+                    }
+                })
+                .next()
+        })
+        .next()
+        .copied()
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn resolve_ip_link_group_name(id: u32) -> String {

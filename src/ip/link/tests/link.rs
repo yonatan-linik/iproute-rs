@@ -14,12 +14,34 @@ fn test_link_show() {
 }
 
 #[test]
+fn test_link_detailed_show() {
+    let cli_path = get_ip_cli_path();
+
+    let expected_output = exec_cmd(&["ip", "-d", "link", "show"]);
+
+    let our_output = exec_cmd(&[cli_path.as_str(), "-d", "link", "show"]);
+
+    pretty_assertions::assert_eq!(expected_output, our_output);
+}
+
+#[test]
 fn test_link_show_json() {
     let cli_path = get_ip_cli_path();
 
     let expected_output = exec_cmd(&["ip", "-j", "link", "show"]);
 
     let our_output = exec_cmd(&[cli_path.as_str(), "-j", "link", "show"]);
+
+    pretty_assertions::assert_eq!(expected_output, our_output);
+}
+
+#[test]
+fn test_link_detailed_show_json() {
+    let cli_path = get_ip_cli_path();
+
+    let expected_output = exec_cmd(&["ip", "-d", "-j", "link", "show"]);
+
+    let our_output = exec_cmd(&[cli_path.as_str(), "-d", "-j", "link", "show"]);
 
     pretty_assertions::assert_eq!(expected_output, our_output);
 }
