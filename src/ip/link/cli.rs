@@ -55,7 +55,7 @@ impl LinkCommand {
                 .collect();
             handle_show(&opts, matches.get_flag("DETAILS")).await
         } else {
-            handle_show(&[], false).await
+            handle_show(&[], matches.get_flag("DETAILS")).await
         }
     }
 }
