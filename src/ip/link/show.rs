@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: MIT
 
+use std::os::fd::AsRawFd;
 use std::{collections::HashMap, ffi::CStr};
 
+use futures_util::stream::StreamExt;
 use futures_util::stream::TryStreamExt;
+use rtnetlink::packet_route::link::LinkInfo;
 use rtnetlink::{
     packet_route::link::{
         AfSpecInet6, AfSpecUnspec, LinkAttribute, LinkLayerType, LinkMessage,
@@ -21,9 +24,14 @@ use iproute_rs::{
 enum CliLinkTypeDetails {
     Loopback,
     Ether {
+        #[serde(skip_serializing_if = "String::is_empty")]
         parentbus: String,
+        #[serde(skip_serializing_if = "String::is_empty")]
         parentdev: String,
     },
+    Ipgre,
+    Tunnel,
+    Sit,
 }
 
 impl CliLinkTypeDetails {
@@ -61,16 +69,16 @@ impl CliLinkTypeDetails {
             LinkLayerType::Ddcmp => todo!(),
             LinkLayerType::Rawhdlc => todo!(),
             LinkLayerType::Rawip => todo!(),
-            LinkLayerType::Tunnel => todo!(),
+            LinkLayerType::Tunnel => CliLinkTypeDetails::Tunnel,
             LinkLayerType::Tunnel6 => todo!(),
             LinkLayerType::Frad => todo!(),
             LinkLayerType::Skip => todo!(),
             LinkLayerType::Localtlk => todo!(),
             LinkLayerType::Fddi => todo!(),
             LinkLayerType::Bif => todo!(),
-            LinkLayerType::Sit => todo!(),
+            LinkLayerType::Sit => CliLinkTypeDetails::Sit,
             LinkLayerType::Ipddp => todo!(),
-            LinkLayerType::Ipgre => todo!(),
+            LinkLayerType::Ipgre => CliLinkTypeDetails::Ipgre,
             LinkLayerType::Pimreg => todo!(),
             LinkLayerType::Hippi => todo!(),
             LinkLayerType::Ash => todo!(),
@@ -139,9 +147,32 @@ impl std::fmt::Display for CliLinkTypeDetails {
             CliLinkTypeDetails::Ether {
                 parentbus,
                 parentdev,
-            } => write!(f, "parentbus {parentbus} parentdev {parentdev} ")?,
+            } => {
+                if !parentbus.is_empty() {
+                    write!(f, "parentbus {parentbus} ")?
+                }
+                if !parentdev.is_empty() {
+                    write!(f, "parentdev {parentdev} ")?
+                }
+            }
+            CliLinkTypeDetails::Ipgre => (),
+            CliLinkTypeDetails::Tunnel => (),
+            CliLinkTypeDetails::Sit => (),
         }
 
+        Ok(())
+    }
+}
+
+#[derive(Serialize)]
+pub(crate) struct CliLinkInfoKind {
+    info_kind: String,
+}
+
+impl std::fmt::Display for CliLinkInfoKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "\n    ")?;
+        write!(f, "{} ", self.info_kind)?;
         Ok(())
     }
 }
@@ -151,6 +182,8 @@ pub(crate) struct CliLinkInfoDetails {
     promiscuity: u32,
     min_mtu: u32,
     max_mtu: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    linkinfo: Option<CliLinkInfoKind>,
     #[serde(skip_serializing_if = "String::is_empty")]
     inet6_addr_gen_mode: String,
     num_tx_queues: u32,
@@ -171,6 +204,7 @@ impl CliLinkInfoDetails {
         let mut promiscuity = 0;
         let mut min_mtu = 0;
         let mut max_mtu = 0;
+        let mut linkinfo = None;
         let mut num_tx_queues = 0;
         let mut num_rx_queues = 0;
         let mut gso_max_size = 0;
@@ -189,6 +223,17 @@ impl CliLinkInfoDetails {
                 LinkAttribute::NumRxQueues(n) => num_rx_queues = *n,
                 LinkAttribute::GsoMaxSize(g) => gso_max_size = *g,
                 LinkAttribute::GsoMaxSegs(g) => gso_max_segs = *g,
+                LinkAttribute::LinkInfo(info) => {
+                    // println!("LinkInfo: {:?}", info);
+                    let mut info_kind = String::new();
+                    for nla in info {
+                        if let LinkInfo::Kind(t) = nla {
+                            info_kind = t.to_string();
+                        }
+                    }
+
+                    linkinfo = Some(CliLinkInfoKind { info_kind });
+                }
                 _ => {
                     // println!("Remains {:?}", nl_attr);
                 }
@@ -199,6 +244,7 @@ impl CliLinkInfoDetails {
             promiscuity,
             min_mtu,
             max_mtu,
+            linkinfo,
             inet6_addr_gen_mode,
             num_tx_queues,
             num_rx_queues,
@@ -213,10 +259,17 @@ impl std::fmt::Display for CliLinkInfoDetails {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            " promiscuity {} minmtu {} maxmtu {} addrgenmode {} numtxqueues {} numrxqueues {} gso_max_size {} gso_max_segs {} {}",
-            self.promiscuity,
-            self.min_mtu,
-            self.max_mtu,
+            " promiscuity {} minmtu {} maxmtu {} ",
+            self.promiscuity, self.min_mtu, self.max_mtu,
+        )?;
+
+        if let Some(linkinfo) = &self.linkinfo {
+            write!(f, "{linkinfo}")?;
+        }
+
+        write!(
+            f,
+            "addrgenmode {} numtxqueues {} numrxqueues {} gso_max_size {} gso_max_segs {} {}",
             self.inet6_addr_gen_mode,
             self.num_tx_queues,
             self.num_rx_queues,
@@ -231,6 +284,10 @@ impl std::fmt::Display for CliLinkInfoDetails {
 #[derive(Serialize, Default)]
 pub(crate) struct CliLinkInfo {
     ifindex: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    link: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    link_index: Option<u32>,
     ifname: String,
     flags: Vec<String>,
     mtu: u32,
@@ -249,6 +306,10 @@ pub(crate) struct CliLinkInfo {
     address: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     broadcast: String,
+    #[serde(skip)]
+    link_netns: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    link_netnsid: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(flatten)]
     details: Option<CliLinkInfoDetails>,
@@ -257,7 +318,20 @@ pub(crate) struct CliLinkInfo {
 impl std::fmt::Display for CliLinkInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}: ", self.ifindex)?;
-        write_with_color!(f, CliColor::IfaceName, "{}: ", self.ifname)?;
+        let link = if self.link_index.is_some() || self.link.is_some() {
+            let display_name = if let Some(link_name) = &self.link {
+                link_name
+            } else if let Some(link_index) = self.link_index {
+                &format!("if{link_index}")
+            } else {
+                "NONE"
+            };
+            format!("@{display_name}")
+        } else {
+            String::new()
+        };
+
+        write_with_color!(f, CliColor::IfaceName, "{}{link}: ", self.ifname)?;
         write!(
             f,
             "<{}> mtu {} qdisc {}",
@@ -286,6 +360,12 @@ impl std::fmt::Display for CliLinkInfo {
             write_with_color!(f, CliColor::Mac, "{}", self.address)?;
             write!(f, " brd ")?;
             write_with_color!(f, CliColor::Mac, "{}", self.broadcast)?;
+        }
+
+        if !self.link_netns.is_empty() {
+            write!(f, " link-netns {}", self.link_netns)?;
+        } else if let Some(netns_id) = self.link_netnsid {
+            write!(f, " link-netnsid {netns_id}")?;
         }
 
         if let Some(details) = &self.details {
@@ -323,24 +403,30 @@ pub(crate) async fn handle_show(
     let mut ifaces: Vec<CliLinkInfo> = Vec::new();
 
     while let Some(nl_msg) = links.try_next().await? {
-        ifaces.push(parse_nl_msg_to_iface(nl_msg, include_details)?);
+        ifaces.push(parse_nl_msg_to_iface(nl_msg, include_details).await?);
     }
 
-    resolve_controller_name(&mut ifaces);
+    resolve_controller_and_link_names(&mut ifaces);
+    resolve_netns_names(&mut ifaces).await?;
 
     Ok(ifaces)
 }
 
-pub(crate) fn parse_nl_msg_to_iface(
+pub(crate) async fn parse_nl_msg_to_iface(
     nl_msg: LinkMessage,
     include_details: bool,
 ) -> Result<CliLinkInfo, CliError> {
     let mut ret = CliLinkInfo {
         ifindex: nl_msg.header.index,
         flags: link_flags_to_string(nl_msg.header.flags),
-        link_type: nl_msg.header.link_layer_type.to_string().to_lowercase(),
+        link_type: link_type_to_string(nl_msg.header.link_layer_type),
         ..Default::default()
     };
+
+    // // Make sure to show the link doesn't exist if it is required by this type
+    // if has_down_link(&nl_msg.header.link_layer_type) {
+    //     ret.link = Some(None);
+    // }
 
     ret.details = include_details.then_some(CliLinkInfoDetails::new_with_type(
         nl_msg.header.link_layer_type,
@@ -370,6 +456,8 @@ pub(crate) fn parse_nl_msg_to_iface(
             }
             LinkAttribute::Mode(v) => ret.linkmode = v.to_string(),
             LinkAttribute::Controller(d) => ret.controller_ifindex = Some(d),
+            LinkAttribute::Link(i) => ret.link_index = Some(i),
+            LinkAttribute::LinkNetNsId(i) => ret.link_netnsid = Some(i),
             _ => {
                 // println!("Remains {:?}", nl_attr);
             }
@@ -377,6 +465,50 @@ pub(crate) fn parse_nl_msg_to_iface(
     }
 
     Ok(ret)
+}
+
+fn link_type_to_string(link_type: LinkLayerType) -> String {
+    match link_type {
+        LinkLayerType::Ipgre => "gre".to_string(),
+        LinkLayerType::Tunnel => "ipip".to_string(),
+        _ => link_type.to_string().to_lowercase(),
+    }
+}
+/// Try to resolve a netns id to its name using rtnetlink.
+/// If not found, returns the id as a string.
+async fn get_netns_id_from_fd(
+    handle: &mut rtnetlink::Handle,
+    fd: u32,
+) -> Option<i32> {
+    let mut nsid_msg = rtnetlink::packet_route::nsid::NsidMessage::default();
+    nsid_msg
+        .attributes
+        .push(rtnetlink::packet_route::nsid::NsidAttribute::Fd(fd));
+    let mut nsid_req = rtnetlink::packet_core::NetlinkMessage::new(
+        rtnetlink::packet_core::NetlinkHeader::default(),
+        rtnetlink::packet_core::NetlinkPayload::InnerMessage(
+            rtnetlink::packet_route::RouteNetlinkMessage::GetNsId(nsid_msg),
+        ),
+    );
+    nsid_req.header.flags = rtnetlink::packet_core::NLM_F_REQUEST;
+
+    let mut netns = handle.request(nsid_req.clone()).unwrap();
+
+    if let Some(msg) = netns.next().await {
+        let rtnetlink::packet_core::NetlinkPayload::InnerMessage(
+            rtnetlink::packet_route::RouteNetlinkMessage::NewNsId(payload),
+        ) = msg.payload
+        else {
+            return None;
+        };
+        for attr in payload.attributes {
+            if let rtnetlink::packet_route::nsid::NsidAttribute::Id(id) = attr {
+                return Some(id);
+            }
+        }
+    }
+
+    None
 }
 
 fn get_addr_gen_mode(af_spec_unspec: &[AfSpecUnspec]) -> String {
@@ -397,9 +529,8 @@ fn get_addr_gen_mode(af_spec_unspec: &[AfSpecUnspec]) -> String {
                 .next()
         })
         .next()
-        .copied()
+        .map(|i| i.to_string())
         .unwrap_or_default()
-        .to_string()
 }
 
 fn resolve_ip_link_group_name(id: u32) -> String {
@@ -410,7 +541,39 @@ fn resolve_ip_link_group_name(id: u32) -> String {
     }
 }
 
-fn resolve_controller_name(links: &mut [CliLinkInfo]) {
+async fn resolve_netns_names(
+    links: &mut [CliLinkInfo],
+) -> Result<(), CliError> {
+    let (conn, mut handle, _) = rtnetlink::new_connection().unwrap();
+    tokio::spawn(conn);
+
+    // Read netns names from /run/netns
+    let netnses = std::fs::read_dir("/run/netns")?;
+    let mut id_to_name: HashMap<i32, String> = HashMap::new();
+    for netns in netnses {
+        let netns = netns?;
+        let name = netns.file_name().into_string().unwrap_or_default();
+        let file = std::fs::File::open(netns.path())?;
+
+        if let Some(id) =
+            get_netns_id_from_fd(&mut handle, file.as_raw_fd() as u32).await
+        {
+            id_to_name.insert(id, name);
+        }
+    }
+
+    for link in links.iter_mut() {
+        if let Some(link_netns_id) = link.link_netnsid {
+            if let Some(name) = id_to_name.get(&link_netns_id) {
+                link.link_netns = name.to_string();
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn resolve_controller_and_link_names(links: &mut [CliLinkInfo]) {
     let index_2_name: HashMap<u32, String> = links
         .iter()
         .map(|l| (l.ifindex, l.ifname.to_string()))
@@ -421,6 +584,21 @@ fn resolve_controller_name(links: &mut [CliLinkInfo]) {
             && let Some(name) = index_2_name.get(&ctrl_ifindex)
         {
             link.controller = Some(name.to_string());
+        }
+        if let Some(link_ifindex) = link.link_index {
+            if link_ifindex == 0 {
+                continue;
+            }
+
+            // Only set link name if the link is from the current netns
+            if let Some(name) = index_2_name.get(&link_ifindex)
+                && link.link_netnsid.is_none()
+            {
+                link.link = Some(name.to_string());
+                // Clear link_index if we have a name
+                // We want to serialize one or the other
+                link.link_index = None;
+            }
         }
     }
 }
