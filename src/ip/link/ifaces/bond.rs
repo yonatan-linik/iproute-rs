@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+#![feature(trace_macros)]
 
 use std::{
     net::{Ipv4Addr, Ipv6Addr},
@@ -16,7 +17,9 @@ use rtnetlink::{
 use serde::Serialize;
 
 use super::parse::{
-    parse_from_str, parse_on_off_01, parse_u8, parse_u16, parse_u32,
+    parse_from_str,
+    parse_on_off_01,
+    // parse_u8, parse_u16, parse_u32,
 };
 use crate::link::LinkBaseConf;
 
@@ -319,212 +322,668 @@ impl std::fmt::Display for CliLinkInfoDataBondPort {
     }
 }
 
-impl LinkBaseConf {
-    pub(crate) async fn apply_bond(
-        &self,
-        handle: &rtnetlink::Handle,
-    ) -> Result<LinkMessageBuilder<LinkBond>, CliError> {
-        let mut builder = LinkBond::new(&self.name);
+// macro_rules! expand_options {
+//     // 1. Entry Point
+//     ($key:expr, $builder:ident, $next_val:ident, $($arms:tt)*) => {
+//         expand_options!(@parse_arms $key, $builder, $next_val, [] $($arms)*)
+//     };
 
-        let mut iter = self.iface_specific.iter();
-        while let Some(key) = iter.next() {
-            let mut next_val = || {
-                iter.next().ok_or_else(|| {
-                    CliError::from(format!("bond {key} requires a value"))
-                })
-            };
-            match key.as_str() {
-                "mode" => {
-                    let v = next_val()?;
-                    builder = builder.mode(parse_from_str(v, "mode")?);
-                }
-                "active_slave" => {
-                    let v = next_val()?;
-                    let ifindex = self.get_ifindex_by_name(handle, v).await?;
-                    builder = builder.active_port(ifindex);
-                }
-                "miimon" => {
-                    let v = next_val()?;
-                    builder = builder.miimon(parse_u32(v, "miimon")?);
-                }
-                "updelay" => {
-                    let v = next_val()?;
-                    builder = builder.updelay(parse_u32(v, "updelay")?);
-                }
-                "downdelay" => {
-                    let v = next_val()?;
-                    builder = builder.downdelay(parse_u32(v, "downdelay")?);
-                }
-                "peer_notify_delay" => {
-                    let v = next_val()?;
-                    builder = builder
-                        .peer_notif_delay(parse_u32(v, "peer_notify_delay")?);
-                }
-                "use_carrier" => {
-                    let v = next_val()?;
-                    builder = builder.use_carrier(parse_on_off_01(v)?);
-                }
-                "arp_interval" => {
-                    let v = next_val()?;
-                    builder =
-                        builder.arp_interval(parse_u32(v, "arp_interval")?);
-                }
-                "arp_validate" => {
-                    let v = next_val()?;
-                    builder = builder
-                        .arp_validate(parse_from_str(v, "arp_validate")?);
-                }
-                "arp_all_targets" => {
-                    let v = next_val()?;
-                    builder = builder
-                        .arp_all_targets(parse_from_str(v, "arp_all_targets")?);
-                }
-                "arp_ip_target" => {
-                    let v = next_val()?;
-                    let addrs: Vec<Ipv4Addr> = v
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .map(|s| {
-                            Ipv4Addr::from_str(s).map_err(|_| {
-                                CliError::from(format!(
-                                    "Invalid arp_ip_target address: {s}"
-                                ))
-                            })
-                        })
-                        .collect::<Result<_, _>>()?;
-                    builder = builder.arp_ip_target(addrs);
-                }
-                "ns_ip6_target" => {
-                    let v = next_val()?;
-                    let addrs: Vec<Ipv6Addr> = v
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .map(|s| {
-                            Ipv6Addr::from_str(s).map_err(|_| {
-                                CliError::from(format!(
-                                    "Invalid ns_ip6_target address: {s}"
-                                ))
-                            })
-                        })
-                        .collect::<Result<_, _>>()?;
-                    builder = builder.ns_ip6_target(addrs);
-                }
-                "primary" => {
-                    let v = next_val()?;
-                    let ifindex = self.get_ifindex_by_name(handle, v).await?;
-                    builder = builder.primary(ifindex);
-                }
-                "primary_reselect" => {
-                    let v = next_val()?;
-                    builder = builder.primary_reselect(parse_from_str(
-                        v,
-                        "primary_reselect",
-                    )?);
-                }
-                "fail_over_mac" => {
-                    let v = next_val()?;
-                    builder = builder
-                        .fail_over_mac(parse_from_str(v, "fail_over_mac")?);
-                }
-                "xmit_hash_policy" => {
-                    let v = next_val()?;
-                    builder = builder.xmit_hash_policy(parse_from_str(
-                        v,
-                        "xmit_hash_policy",
-                    )?);
-                }
-                "resend_igmp" => {
-                    let v = next_val()?;
-                    builder = builder.resend_igmp(parse_u32(v, "resend_igmp")?);
-                }
-                "num_grat_arp" | "num_unsol_na" => {
-                    let v = next_val()?;
-                    builder = builder.num_peer_notif(parse_u8(v, key)?);
-                }
-                "all_slaves_active" => {
-                    let v = next_val()?;
-                    builder = builder.all_ports_active(parse_from_str(
-                        v,
-                        "all_slaves_active",
-                    )?);
-                }
-                "min_links" => {
-                    let v = next_val()?;
-                    builder = builder.min_links(parse_u32(v, "min_links")?);
-                }
-                "lp_interval" => {
-                    let v = next_val()?;
-                    builder = builder.lp_interval(parse_u32(v, "lp_interval")?);
-                }
-                "packets_per_slave" => {
-                    let v = next_val()?;
-                    builder = builder.packets_per_port(parse_u32(v, key)?);
-                }
-                "tlb_dynamic_lb" => {
-                    let v = next_val()?;
-                    builder = builder.tlb_dynamic_lb(parse_on_off_01(v)?);
-                }
-                "lacp_rate" => {
-                    let v = next_val()?;
-                    builder =
-                        builder.ad_lacp_rate(parse_from_str(v, "lacp_rate")?);
-                }
-                "lacp_active" | "ad_lacp_active" => {
-                    let v = next_val()?;
-                    builder = builder.ad_lacp_active(parse_on_off_01(v)?);
-                }
-                "coupled_control" => {
-                    let v = next_val()?;
-                    builder = builder.append_info_data(
-                        InfoBond::CoupledControl(parse_on_off_01(v)?),
-                    );
-                }
-                "broadcast_neighbor" => {
-                    let v = next_val()?;
-                    builder = builder.append_info_data(
-                        InfoBond::BroadcastNeigh(parse_on_off_01(v)?),
-                    );
-                }
-                "ad_select" => {
-                    let v = next_val()?;
-                    builder =
-                        builder.ad_select(parse_from_str(v, "ad_select")?);
-                }
-                "ad_user_port_key" => {
-                    let v = next_val()?;
-                    builder = builder
-                        .ad_user_port_key(parse_u16(v, "ad_user_port_key")?);
-                }
-                "ad_actor_sys_prio" => {
-                    let v = next_val()?;
-                    builder = builder
-                        .ad_actor_sys_prio(parse_u16(v, "ad_actor_sys_prio")?);
-                }
-                "ad_actor_system" => {
-                    let v = next_val()?;
-                    let mac: [u8; 6] =
-                        parse_mac_str(v)?.try_into().map_err(|_| {
-                            CliError::from(format!(
-                                "Invalid ad_actor_system MAC: {v}"
-                            ))
-                        })?;
-                    builder = builder.ad_actor_system(mac);
-                }
-                "arp_missed_max" => {
-                    let v = next_val()?;
-                    builder =
-                        builder.missed_max(parse_u8(v, "arp_missed_max")?);
-                }
-                _ => {
-                    return Err(CliError::from(format!(
-                        "Unknown bond argument: {key}"
-                    )));
-                }
-            }
+//     // 2. Base Case: Completely empty
+//     (@parse_arms $key:expr, [ $($processed:tt)* ]) => {
+//         match $key.as_str() {
+//             $($processed)*
+//             _ => {}
+//         }
+//     };
+
+//     // 3. Base Case: Trailing comma left over at the end
+//     (@parse_arms $key:expr, [ $($processed:tt)* ] ,) => {
+//         expand_options!(@parse_arms $key, [ $($processed)* ])
+//     };
+
+//     // 4. Explicit arm WITH a trailing comma
+//     (@parse_arms $key:expr, $builder:ident, $next_val:ident, [
+// $($processed:tt)* ] $name:literal => $apply:ident, $($rest:tt)*) => {
+//         expand_options!(
+//             @parse_arms $key, $builder, $next_val,
+//             [
+//                 $($processed)*
+//                 $name => {
+//                     let v = $next_val()?;
+//                     $builder = $builder.$apply(parse_from_str(v.as_str(),
+// $name)?);                 },
+//             ]
+//             $($rest)*
+//         )
+//     };
+
+//     // 5. Explicit arm WITHOUT a trailing comma (fixes your exact error)
+//     (@parse_arms $key:expr, $builder:ident, $next_val:ident, [
+// $($processed:tt)* ] $name:literal => $apply:ident) => {
+//         expand_options!(
+//             @parse_arms $key,
+//             [
+//                 $($processed)*
+//                 $name => {
+//                     let v = $next_val()?;
+//                     $builder = $builder.$apply(parse_from_str(v.as_str(),
+// $name)?);                 },
+//             ]
+//         )
+//     };
+
+//     // 6. Shorthand arm WITH a trailing comma
+//     (@parse_arms $key:expr, $builder:ident, $next_val:ident, [
+// $($processed:tt)* ] $val:ident, $($rest:tt)*) => {         expand_options!(
+//             @parse_arms $key, $builder, $next_val,
+//             [
+//                 $($processed)*
+//                 x if x == stringify!($val) => {
+//                     let v = $next_val()?;
+//                     $builder = $builder.$val(parse_from_str(v.as_str(),
+// stringify!($val))?);                 },
+//             ]
+//             $($rest)*
+//         )
+//     };
+
+//     // 7. Shorthand arm WITHOUT a trailing comma
+//     (@parse_arms $key:expr, $builder:ident, $next_val:ident, [
+// $($processed:tt)* ] $val:ident) => {         expand_options!(
+//             @parse_arms $key,
+//             [
+//                 $($processed)*
+//                 x if x == stringify!($val) => {
+//                     let v = $next_val()?;
+//                     $builder = $builder.$val(parse_from_str(v.as_str(),
+// stringify!($val))?);                 },
+//             ]
+//         )
+//     };
+// }
+
+// macro_rules! expand_options {
+//     ($key:expr, $($arms:tt)*) => {
+//         match $key.as_str() {
+//             expand_options!(@parse_arms $($arms)*),
+//             _ => {}
+//         }
+//     };
+//     (@parse_arms) => {
+//         // _ => {}
+//     };
+//     (@parse_arms $name:literal => $apply:ident, $($rest:tt)*) => {
+//         $name => {
+//             let v = next_val()?;
+//             builder = builder.$apply(parse_from_str(v.as_str(), $name)?);
+//         },
+//         expand_options!(@parse_arms $($rest)*)
+//     };
+//     (@parse_arms $val:ident, $($rest:tt)*) => {
+//         expand_options!(@parse_arms stringify!($val) => $val, $($rest)*)
+//     };
+// }
+//
+
+// macro_rules! expand_options {
+//     // Internal helper: Generates an explicit string-literal match arm
+//     (@build_arm $name:literal => $apply:ident, $next_val:ident,
+// $builder:ident) => {         $name => {
+//             let v = $next_val()?;
+//             $builder = $builder.$apply(parse_from_str(v.as_str(), $name)?);
+//         }
+//     };
+
+//     // Internal helper: Generates a shorthand identifier match arm
+//     (@build_arm $val:ident, $next_val:ident, $builder:ident) => {
+//         stringify!($val) => {
+//             let v = $next_val()?;
+//             $builder = $builder.$val(parse_from_str(v.as_str(),
+// stringify!($val))?);         }
+//     };
+
+//     // Main Entry Point: Explicitly match either 'literal => ident' OR
+// 'ident'     ($key:expr, $builder:ident, $next_val:ident, $(
+//         $( $name:literal => $apply:ident )? $( $val:ident )?
+//     ),* $(,)?) => {
+//         match $key.as_str() {
+//             $(
+//                 $( expand_options!(@build_arm $name => $apply, $next_val,
+// $builder), )?                 $( expand_options!(@build_arm $val, $next_val,
+// $builder), )?             )*
+//             _ => {}
+//         }
+//     };
+// }
+//
+
+// macro_rules! expand_options {
+//     // 1. Entry Point: Pack the input arms into the muncher stream
+//     ($key:expr, $builder:ident, $next_val:ident, $($arms:tt)*) => {
+//         expand_options!(@parse_arms $key, $builder, $next_val, [] $($arms)*)
+//     };
+
+//     // 2. Base Case: No more tokens to parse. Safely emit the complete match
+// expression!     (@parse_arms $key:expr, $builder:ident, $next_val:ident, [
+// $($processed:tt)* ]) => {         match $key.as_str() {
+//             $($processed)*
+//             _ => {}
+//         }
+//     };
+
+//     // 3. Base Case: Clean up any isolated trailing comma left over at the
+// very end     (@parse_arms $key:expr, $builder:ident, $next_val:ident, [
+// $($processed:tt)* ] ,) => {         expand_options!(@parse_arms $key,
+// $builder, $next_val, [ $($processed)* ])     };
+
+//     // 4. Explicit Arm: Matches "literal" => identifier, optionally followed
+// by a comma and everything else     (@parse_arms $key:expr, $builder:ident,
+// $next_val:ident, [ $($processed:tt)* ] $name:literal => $apply:ident $(,
+// $($rest:tt)*)?) => {         expand_options!(
+//             @parse_arms $key, $builder, $next_val,
+//             [
+//                 $($processed)*
+//                 $name => {
+//                     let v = $next_val()?;
+//                     $builder = $builder.$apply(parse_from_str(v.as_str(),
+// $name)?);                 },
+//             ]
+//             $( $($rest)* )?
+//         )
+//     };
+
+//     // 5. Shorthand Arm: Matches identifier, optionally followed by a comma
+// and everything else     (@parse_arms $key:expr, $builder:ident,
+// $next_val:ident, [ $($processed:tt)* ] $val:ident $(, $($rest:tt)*)?) => {
+//         expand_options!(
+//             @parse_arms $key, $builder, $next_val,
+//             [
+//                 $($processed)*
+//                 x if x == stringify!($val) => {
+//                     let v = $next_val()?;
+//                     $builder = $builder.$val(parse_from_str(v.as_str(),
+// stringify!($val))?);                 },
+//             ]
+//             $( $($rest)* )?
+//         )
+//     };
+// }
+
+// macro_rules! expand_options {
+//     // 1. Entry Point: Now accepts $self and $handle to handle async context
+// mapping     ($key:expr, $builder:ident, $next_val:ident, $self:ident,
+// $handle:ident, $($arms:tt)*) => {         expand_options!(@parse_arms $key,
+// $builder, $next_val, $self, $handle, [] $($arms)*)     };
+
+//     // 2. Base Case: Done parsing, output the match statement
+//     (@parse_arms $key:expr, $builder:ident, $next_val:ident, $self:ident,
+// $handle:ident, [ $($processed:tt)* ]) => {         match $key.as_str() {
+//             $($processed)*
+//             _ => {}
+//         }
+//     };
+
+//     // 3. Base Case: Clean up any stray trailing commas
+//     (@parse_arms $key:expr, $builder:ident, $next_val:ident, $self:ident,
+// $handle:ident, [ $($processed:tt)* ] ,) => {         expand_options!(@
+// parse_arms $key, $builder, $next_val, $self, $handle, [ $($processed)* ])
+//     };
+
+//     // 4. NEW CASE: Explicit translation using =ifindex=> syntax
+//     (@parse_arms $key:expr, $builder:ident, $next_val:ident, $self:ident,
+// $handle:ident, [ $($processed:tt)* ] $name:literal =ifindex=> $apply:ident
+// $(, $($rest:tt)*)?) => {         expand_options!(
+//             @parse_arms $key, $builder, $next_val, $self, $handle,
+//             [
+//                 $($processed)*
+//                 $name => {
+//                     let v = $next_val()?;
+//                     let ifindex = $self.get_ifindex_by_name($handle,
+// v).await?;                     $builder = $builder.$apply(ifindex);
+//                 },
+//             ]
+//             $( $($rest)* )?
+//         )
+//     };
+
+//     // 5. Explicit Arm: "literal" => identifier
+//     (@parse_arms $key:expr, $builder:ident, $next_val:ident, $self:ident,
+// $handle:ident, [ $($processed:tt)* ] $name:literal => $apply:ident $(,
+// $($rest:tt)*)?) => {         expand_options!(
+//             @parse_arms $key, $builder, $next_val, $self, $handle,
+//             [
+//                 $($processed)*
+//                 $name => {
+//                     let v = $next_val()?;
+//                     $builder = $builder.$apply(parse_from_str(v.as_str(),
+// $name)?);                 },
+//             ]
+//             $( $($rest)* )?
+//         )
+//     };
+
+//     // 6. Shorthand Arm: identifier
+//     (@parse_arms $key:expr, $builder:ident, $next_val:ident, $self:ident,
+// $handle:ident, [ $($processed:tt)* ] $val:ident $(, $($rest:tt)*)?) => {
+//         expand_options!(
+//             @parse_arms $key, $builder, $next_val, $self, $handle,
+//             [
+//                 $($processed)*
+//                 x if x == stringify!($val) => {
+//                     let v = $next_val()?;
+//                     $builder = $builder.$val(parse_from_str(v.as_str(),
+// stringify!($val))?);                 },
+//             ]
+//             $( $($rest)* )?
+//         )
+//     };
+// }
+
+macro_rules! expand_options {
+    // 1. Entry Point
+    ($key:expr, $builder:ident, $next_val:ident, $self:ident, $handle:ident, $($arms:tt)*) => {
+        expand_options!(@parse_arms $key, $builder, $next_val, $self, $handle, [] $($arms)*)
+    };
+
+    // 2. Base Case: Done parsing, output the match statement
+    (@parse_arms $key:expr, $builder:ident, $next_val:ident, $self:ident, $handle:ident, [ $($processed:tt)* ]) => {
+        match $key.as_str() {
+            $($processed)*
+            _ => {}
         }
+    };
 
-        Ok(builder)
-    }
+    // 3. Base Case: Clean up any stray trailing commas
+    (@parse_arms $key:expr, $builder:ident, $next_val:ident, $self:ident, $handle:ident, [ $($processed:tt)* ] ,) => {
+        expand_options!(@parse_arms $key, $builder, $next_val, $self, $handle, [ $($processed)* ])
+    };
+
+    // 4. Vector Split and Parse using =vec=> syntax
+    (@parse_arms $key:expr, $builder:ident, $next_val:ident, $self:ident, $handle:ident, [ $($processed:tt)* ] $name:literal =vec=> $apply:ident $(, $($rest:tt)*)?) => {
+        expand_options!(
+            @parse_arms $key, $builder, $next_val, $self, $handle,
+            [
+                $($processed)*
+                $name => {
+                    let v = $next_val()?;
+                    let addrs: Vec<_> = v
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(|s| {
+                            <_ as std::str::FromStr>::from_str(s).map_err(|_| {
+                                CliError::from(format!(
+                                    "Invalid {} address: {s}", $name
+                                ))
+                            })
+                        })
+                        .collect::<Result<_, _>>()?;
+                    $builder = $builder.$apply(addrs);
+                },
+            ]
+            $( $($rest)* )?
+        )
+    };
+
+    // 5. Explicit translation using =ifindex=> syntax
+    (@parse_arms $key:expr, $builder:ident, $next_val:ident, $self:ident, $handle:ident, [ $($processed:tt)* ] $name:literal =ifindex=> $apply:ident $(, $($rest:tt)*)?) => {
+        expand_options!(
+            @parse_arms $key, $builder, $next_val, $self, $handle,
+            [
+                $($processed)*
+                $name => {
+                    let v = $next_val()?;
+                    let ifindex = $self.get_ifindex_by_name($handle, v).await?;
+                    $builder = $builder.$apply(ifindex);
+                },
+            ]
+            $( $($rest)* )?
+        )
+    };
+
+    // 6. Explicit Arm: "literal" => identifier
+    (@parse_arms $key:expr, $builder:ident, $next_val:ident, $self:ident, $handle:ident, [ $($processed:tt)* ] $name:literal => $apply:ident $(, $($rest:tt)*)?) => {
+        expand_options!(
+            @parse_arms $key, $builder, $next_val, $self, $handle,
+            [
+                $($processed)*
+                $name => {
+                    let v = $next_val()?;
+                    $builder = $builder.$apply(parse_from_str(v.as_str(), $name)?);
+                },
+            ]
+            $( $($rest)* )?
+        )
+    };
+
+    // 7. Shorthand Arm: identifier
+    (@parse_arms $key:expr, $builder:ident, $next_val:ident, $self:ident, $handle:ident, [ $($processed:tt)* ] $val:ident $(, $($rest:tt)*)?) => {
+        expand_options!(
+            @parse_arms $key, $builder, $next_val, $self, $handle,
+            [
+                $($processed)*
+                stringify!($val) => {
+                    let v = $next_val()?;
+                    $builder = $builder.$val(parse_from_str(v.as_str(), stringify!($val))?);
+                },
+            ]
+            $( $($rest)* )?
+        )
+    };
+}
+
+macro_rules! add_options_parse {
+    ($iface_kind:ident, $fn_name:ident, $builder:ty, $($tail:tt)*) => {
+        pub(crate) async fn $fn_name(
+            &self,
+            handle: &rtnetlink::Handle,
+        ) -> Result<LinkMessageBuilder<$builder>, CliError> {
+            let mut builder = <$builder>::new(&self.name);
+
+            let mut iter = self.iface_specific.iter();
+            while let Some(key) = iter.next() {
+                let mut next_val = || {
+                    iter.next().ok_or_else(|| {
+                        CliError::from(format!("{} {key} requires a value", stringify!($iface_kind)))
+                    })
+                };
+                expand_options!(key, builder, next_val, self, handle, $($tail)*)
+            }
+
+            Ok(builder)
+        }
+    };
+}
+
+impl LinkBaseConf {
+    // trace_macros!(true);
+    add_options_parse!(bond, apply_bond, LinkBond,
+        mode,
+        "active_slave" =ifindex=> active_port,
+        miimon,
+        updelay,
+        downdelay,
+        "peer_notify_delay" => peer_notif_delay,
+        use_carrier,
+        arp_interval,
+        arp_validate,
+        arp_all_targets,
+        "arp_ip_target" =vec=> arp_ip_target,
+        "ns_ip6_target" =vec=> ns_ip6_target,
+        primary,
+        primary_reselect,
+        fail_over_mac,
+        xmit_hash_policy,
+        resend_igmp,
+        "num_grat_arp" => num_peer_notif,
+        "num_unsol_na" => num_peer_notif,
+        "all_slaves_active" => all_ports_active,
+        min_links,
+        lp_interval,
+        "packets_per_slave" => packets_per_port,
+        tlb_dynamic_lb,
+        "lacp_rate" => ad_lacp_rate,
+        "lacp_active" => ad_lacp_active,
+        ad_lacp_active,
+        // coupled_control,
+        // "broadcast_neighbor" => broadcast_neighbor,
+        ad_select,
+        ad_user_port_key,
+        ad_actor_sys_prio,
+        // ad_actor_system,
+        "arp_missed_max" => missed_max,
+    );
+
+    //         "coupled_control" => {
+    //             let v = next_val()?;
+    //             builder = builder.append_info_data(
+    //                 InfoBond::CoupledControl(parse_on_off_01(v)?),
+    //             );
+    //         }
+    //         "broadcast_neighbor" => {
+    //             let v = next_val()?;
+    //             builder = builder.append_info_data(
+    //                 InfoBond::BroadcastNeigh(parse_on_off_01(v)?),
+    //             );
+    //         }
+    //         "ad_select" => {
+    //             let v = next_val()?;
+    //             builder =
+    //                 builder.ad_select(parse_from_str(v, "ad_select")?);
+    //         }
+    //         "ad_user_port_key" => {
+    //             let v = next_val()?;
+    //             builder = builder
+    //                 .ad_user_port_key(parse_u16(v, "ad_user_port_key")?);
+    //         }
+    //         "ad_actor_sys_prio" => {
+    //             let v = next_val()?;
+    //             builder = builder
+    //                 .ad_actor_sys_prio(parse_u16(v, "ad_actor_sys_prio")?);
+    //         }
+    //         "ad_actor_system" => {
+    //             let v = next_val()?;
+    //             let mac: [u8; 6] =
+    //                 parse_mac_str(v)?.try_into().map_err(|_| {
+    //                     CliError::from(format!(
+    //                         "Invalid ad_actor_system MAC: {v}"
+    //                     ))
+    //                 })?;
+    //             builder = builder.ad_actor_system(mac);
+    //         }
+    //         "arp_missed_max" => {
+    //             let v = next_val()?;
+    //             builder =
+    //                 builder.missed_max(parse_u8(v, "arp_missed_max")?);
+    //         }
+
+    // trace_macros!(false);
+    // pub(crate) async fn apply_bond(
+    //     &self,
+    //     handle: &rtnetlink::Handle,
+    // ) -> Result<LinkMessageBuilder<LinkBond>, CliError> {
+
+    // let mut builder = LinkBond::new(&self.name);
+
+    // let mut iter = self.iface_specific.iter();
+    // while let Some(key) = iter.next() {
+    //     let mut next_val = || {
+    //         iter.next().ok_or_else(|| {
+    //             CliError::from(format!("bond {key} requires a value"))
+    //         })
+    //     };
+    //     match key.as_str() {
+    //         "mode" => {
+    //             let v = next_val()?;
+    //             builder = builder.mode(parse_from_str(v, "mode")?);
+    //         }
+    //         "active_slave" => {
+    //             let v = next_val()?;
+    //             let ifindex = self.get_ifindex_by_name(handle, v).await?;
+    //             builder = builder.active_port(ifindex);
+    //         }
+    //         "miimon" => {
+    //             let v = next_val()?;
+    //             builder = builder.miimon(parse_u32(v, "miimon")?);
+    //         }
+    //         "updelay" => {
+    //             let v = next_val()?;
+    //             builder = builder.updelay(parse_u32(v, "updelay")?);
+    //         }
+    //         "downdelay" => {
+    //             let v = next_val()?;
+    //             builder = builder.downdelay(parse_u32(v, "downdelay")?);
+    //         }
+    //         "peer_notify_delay" => {
+    //             let v = next_val()?;
+    //             builder = builder
+    //                 .peer_notif_delay(parse_u32(v, "peer_notify_delay")?);
+    //         }
+    //         "use_carrier" => {
+    //             let v = next_val()?;
+    //             builder = builder.use_carrier(parse_on_off_01(v)?);
+    //         }
+    //         "arp_interval" => {
+    //             let v = next_val()?;
+    //             builder =
+    //                 builder.arp_interval(parse_u32(v, "arp_interval")?);
+    //         }
+    //         "arp_validate" => {
+    //             let v = next_val()?;
+    //             builder = builder
+    //                 .arp_validate(parse_from_str(v, "arp_validate")?);
+    //         }
+    //         "arp_all_targets" => {
+    //             let v = next_val()?;
+    //             builder = builder
+    //                 .arp_all_targets(parse_from_str(v, "arp_all_targets")?);
+    //         }
+    //         "arp_ip_target" => {
+    //             let v = next_val()?;
+    //             let addrs: Vec<Ipv4Addr> = v
+    //                 .split(',')
+    //                 .map(str::trim)
+    //                 .filter(|s| !s.is_empty())
+    //                 .map(|s| {
+    //                     Ipv4Addr::from_str(s).map_err(|_| {
+    //                         CliError::from(format!(
+    //                             "Invalid arp_ip_target address: {s}"
+    //                         ))
+    //                     })
+    //                 })
+    //                 .collect::<Result<_, _>>()?;
+    //             builder = builder.arp_ip_target(addrs);
+    //         }
+    //         "ns_ip6_target" => {
+    //             let v = next_val()?;
+    //             let addrs: Vec<Ipv6Addr> = v
+    //                 .split(',')
+    //                 .map(str::trim)
+    //                 .filter(|s| !s.is_empty())
+    //                 .map(|s| {
+    //                     Ipv6Addr::from_str(s).map_err(|_| {
+    //                         CliError::from(format!(
+    //                             "Invalid ns_ip6_target address: {s}"
+    //                         ))
+    //                     })
+    //                 })
+    //                 .collect::<Result<_, _>>()?;
+    //             builder = builder.ns_ip6_target(addrs);
+    //         }
+    //         "primary" => {
+    //             let v = next_val()?;
+    //             let ifindex = self.get_ifindex_by_name(handle, v).await?;
+    //             builder = builder.primary(ifindex);
+    //         }
+    //         "primary_reselect" => {
+    //             let v = next_val()?;
+    //             builder = builder.primary_reselect(parse_from_str(
+    //                 v,
+    //                 "primary_reselect",
+    //             )?);
+    //         }
+    //         "fail_over_mac" => {
+    //             let v = next_val()?;
+    //             builder = builder
+    //                 .fail_over_mac(parse_from_str(v, "fail_over_mac")?);
+    //         }
+    //         "xmit_hash_policy" => {
+    //             let v = next_val()?;
+    //             builder = builder.xmit_hash_policy(parse_from_str(
+    //                 v,
+    //                 "xmit_hash_policy",
+    //             )?);
+    //         }
+    //         "resend_igmp" => {
+    //             let v = next_val()?;
+    //             builder = builder.resend_igmp(parse_u32(v, "resend_igmp")?);
+    //         }
+    //         "num_grat_arp" | "num_unsol_na" => {
+    //             let v = next_val()?;
+    //             builder = builder.num_peer_notif(parse_u8(v, key)?);
+    //         }
+    //         "all_slaves_active" => {
+    //             let v = next_val()?;
+    //             builder = builder.all_ports_active(parse_from_str(
+    //                 v,
+    //                 "all_slaves_active",
+    //             )?);
+    //         }
+    //         "min_links" => {
+    //             let v = next_val()?;
+    //             builder = builder.min_links(parse_u32(v, "min_links")?);
+    //         }
+    //         "lp_interval" => {
+    //             let v = next_val()?;
+    //             builder = builder.lp_interval(parse_u32(v, "lp_interval")?);
+    //         }
+    //         "packets_per_slave" => {
+    //             let v = next_val()?;
+    //             builder = builder.packets_per_port(parse_u32(v, key)?);
+    //         }
+    //         "tlb_dynamic_lb" => {
+    //             let v = next_val()?;
+    //             builder = builder.tlb_dynamic_lb(parse_on_off_01(v)?);
+    //         }
+    //         "lacp_rate" => {
+    //             let v = next_val()?;
+    //             builder =
+    //                 builder.ad_lacp_rate(parse_from_str(v, "lacp_rate")?);
+    //         }
+    //         "lacp_active" | "ad_lacp_active" => {
+    //             let v = next_val()?;
+    //             builder = builder.ad_lacp_active(parse_on_off_01(v)?);
+    //         }
+    //         "coupled_control" => {
+    //             let v = next_val()?;
+    //             builder = builder.append_info_data(
+    //                 InfoBond::CoupledControl(parse_on_off_01(v)?),
+    //             );
+    //         }
+    //         "broadcast_neighbor" => {
+    //             let v = next_val()?;
+    //             builder = builder.append_info_data(
+    //                 InfoBond::BroadcastNeigh(parse_on_off_01(v)?),
+    //             );
+    //         }
+    //         "ad_select" => {
+    //             let v = next_val()?;
+    //             builder =
+    //                 builder.ad_select(parse_from_str(v, "ad_select")?);
+    //         }
+    //         "ad_user_port_key" => {
+    //             let v = next_val()?;
+    //             builder = builder
+    //                 .ad_user_port_key(parse_u16(v, "ad_user_port_key")?);
+    //         }
+    //         "ad_actor_sys_prio" => {
+    //             let v = next_val()?;
+    //             builder = builder
+    //                 .ad_actor_sys_prio(parse_u16(v, "ad_actor_sys_prio")?);
+    //         }
+    //         "ad_actor_system" => {
+    //             let v = next_val()?;
+    //             let mac: [u8; 6] =
+    //                 parse_mac_str(v)?.try_into().map_err(|_| {
+    //                     CliError::from(format!(
+    //                         "Invalid ad_actor_system MAC: {v}"
+    //                     ))
+    //                 })?;
+    //             builder = builder.ad_actor_system(mac);
+    //         }
+    //         "arp_missed_max" => {
+    //             let v = next_val()?;
+    //             builder =
+    //                 builder.missed_max(parse_u8(v, "arp_missed_max")?);
+    //         }
+    //         _ => {
+    //             return Err(CliError::from(format!(
+    //                 "Unknown bond argument: {key}"
+    //             )));
+    //         }
+    //     }
+    // }
+
+    // Ok(builder)
+    // }
 }
